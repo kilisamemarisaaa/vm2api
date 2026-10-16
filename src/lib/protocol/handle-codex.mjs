@@ -217,14 +217,29 @@ export function pickCodexCandidates(
 
 function ingestCodexHop(projectRoot, vmId, result, now = Date.now(), policy = null) {
   const headers = result?.headers || {}
-  const extra = extraFromCodexHeaders(headers, now)
+  let extra = extraFromCodexHeaders(headers, now)
   let limitedUntil = null
-  if (
-    isCodexFailoverError(result) &&
-    (Number(result?.status) === 429 || /usage_limit_reached/.test(String(result?.body?.error?.code || '')))
-  ) {
+  const errorCode = String(result?.body?.error?.code || '')
+  const usageLimit = /usage_limit_reached/i.test(errorCode)
+  if (isCodexFailoverError(result) && (Number(result?.status) === 429 || usageLimit)) {
     const park = extra ? codexQuotaPark(extra, now) : { limited: true, until: now + CODEX_DEFAULT_PARK_MS }
     limitedUntil = park.until || now + CODEX_DEFAULT_PARK_MS
+  }
+  // Some Codex 429 responses omit x-codex-* headers. Keep the panel's
+  // progress meter aligned with the explicit usage_limit_reached error
+  // instead of leaving a stale, apparently available percentage behind.
+  if (usageLimit && !extra) {
+    const message = String(result?.body?.error?.message || '')
+    const window = /7d|7-day|weekly|seven[ -]?day/i.test(message) ? '7d' : '5h'
+    const resetAt = new Date(limitedUntil || now + CODEX_DEFAULT_PARK_MS).toISOString()
+    extra = {
+      [`codex_${window}_used_percent`]: 100,
+      [`codex_${window}_window_minutes`]: window === '7d' ? 10080 : 300,
+      [`codex_${window}_reset_at`]: resetAt,
+      [`codex_${window}_reset_after_seconds`]: Math.max(1, Math.round((Date.parse(resetAt) - now) / 1000)),
+      codex_rate_limit_reached_type: window,
+      codex_usage_updated_at: new Date(now).toISOString(),
+    }
   }
   if (!extra && !limitedUntil) return null
   return persistCodexUsage(projectRoot, vmId, { headers, extra, limitedUntil, now, policy })

@@ -133,11 +133,6 @@ test('quota 429 hops the next GPT slot and records 5h/7d extra', async () => {
             ok: false,
             status: 429,
             committed: false,
-            headers: {
-              'x-codex-primary-used-percent': '100',
-              'x-codex-primary-window-minutes': '300',
-              'x-codex-primary-reset-after-seconds': '60',
-            },
             body: { error: { type: 'api_error', code: 'usage_limit_reached', message: '5h' } },
           }
         }
@@ -162,7 +157,7 @@ test('quota 429 hops the next GPT slot and records 5h/7d extra', async () => {
   assert.equal(logBag.codex_failed_over, true)
   assert.equal(logBag.vm_id, 'vm-gpt-b')
   const spent = getVm(root, 'vm-gpt-a')
-  assert.equal(spent.codex.extra.codex_primary_used_percent, 100)
+  assert.equal(spent.codex.extra.codex_5h_used_percent, 100)
   assert.ok(spent.codex.extra.codex_limited_until)
   assert.equal(spent.codex.usage.quota.utilization_5h, 1)
   assert.equal(spent.schedulable, true)
