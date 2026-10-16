@@ -31,6 +31,7 @@ SERVICE_NAME="vm2api"
 DEFAULT_PORT="${PORT:-8787}"
 TARGET_VERSION=""
 ASSUME_YES=0
+AUTO_MODE=0
 NO_START=0
 SYNC_WRAP=1
 FROM_SOURCE=0
@@ -39,6 +40,8 @@ DEFAULT_ADMIN_PASSWORD="123456"
 WROTE_DEFAULT_PASSWORD=0
 HOST_ARCH=""
 REQUESTED_ARCH=""
+UPGRADE_LOCK_FILE="${VM2API_UPGRADE_LOCK:-/run/lock/vm2api-upgrade.lock}"
+UPGRADE_LOCK_MARKER=""
 
 info() { echo -e "${BLUE}[信息]${NC} $*"; }
 ok() { echo -e "${GREEN}[成功]${NC} $*"; }
@@ -72,6 +75,7 @@ usage() {
   --version vX.Y.Z     指定 tag（可带 -amd64 / -arm64 后缀，须与宿主架构一致）
   --dir PATH           安装目录（默认 ${INSTALL_DIR}）
   --yes                非交互
+  --auto               无人值守升级：已是最新时不触碰 Docker；升级过程加锁
   --no-start           只拉代码，不 compose up
   --no-sync-wrap       升级后不自动替换并重启槽内 CLI / kernel
   --from-source        clone 仓库并在本机构建镜像（默认拉预构建镜像）
@@ -180,6 +184,30 @@ require_cmds() {
     exit 1
   fi
   compose version >/dev/null
+}
+
+acquire_upgrade_lock() {
+  local lock_dir
+  lock_dir="$(dirname "$UPGRADE_LOCK_FILE")"
+  mkdir -p "$lock_dir" 2>/dev/null || true
+  if command -v flock >/dev/null 2>&1; then
+    # Keep fd 9 open for the lifetime of this shell. A second timer exits
+    # before it can fetch or restart anything.
+    exec 9>"$UPGRADE_LOCK_FILE"
+    if ! flock -n 9; then
+      info "已有升级任务在运行，跳过本次检查"
+      exit 0
+    fi
+    return 0
+  fi
+  # Busybox/minimal hosts may not ship flock. mkdir is atomic and gives the
+  # same single-run guarantee; the trap only removes our marker on exit.
+  UPGRADE_LOCK_MARKER="${UPGRADE_LOCK_FILE}.d"
+  if ! mkdir "$UPGRADE_LOCK_MARKER" 2>/dev/null; then
+    info "已有升级任务在运行，跳过本次检查"
+    exit 0
+  fi
+  trap 'rmdir "$UPGRADE_LOCK_MARKER" 2>/dev/null || true' EXIT
 }
 
 github_api() {
@@ -666,6 +694,9 @@ cmd_install() {
 
 cmd_upgrade() {
   need_root
+  if [ "$AUTO_MODE" = 1 ]; then
+    acquire_upgrade_lock
+  fi
   require_cmds
   resolve_host_arch
   print_banner
@@ -677,6 +708,10 @@ cmd_upgrade() {
   current="$(local_version)"
   tag="${TARGET_VERSION:-$(latest_release_tag)}"
   tag="$(normalize_tag "$tag")"
+  if [ "$AUTO_MODE" = 1 ] && [ "$current" != "not_installed" ] && [ "v${current}" = "$tag" ]; then
+    ok "已是 ${tag}，自动升级跳过（未执行 compose / wrap 同步）"
+    return 0
+  fi
   info "当前 ${current}  →  目标 ${tag}（linux/${HOST_ARCH}）"
   if [ "v${current}" = "$tag" ]; then
     ok "已经是 ${tag}，仍会对齐镜像与部署文件"
@@ -821,6 +856,10 @@ while [ $# -gt 0 ]; do
       ;;
     --yes|-y)
       ASSUME_YES=1
+      shift
+      ;;
+    --auto)
+      AUTO_MODE=1
       shift
       ;;
     --no-start)

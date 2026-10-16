@@ -54,6 +54,48 @@ sudo bash /opt/vm2api/deploy/install.sh changelog
 
 保留 `.env` / `vms/` / `data/`。不要 `docker rm` 槽。一键更新会自动把新版 `share/wrap-cli`（包括 `kin-kernel.bin`）同步到所有槽并重启槽内 dataplane；如需暂时跳过可加 `--no-sync-wrap`。管理台 **设置 → 关于** 可复制同一条命令、看 changelog。指定版本：`--version v1.2.22`。
 
+### 无人值守升级
+
+需要定时检查 Release 时使用 `upgrade --auto`。它会在锁内执行；当前 `VERSION` 已是最新时直接退出，完全不运行 `compose`，也不会同步或重启槽内组件。发现新版本后才按普通升级流程执行，并保留 `.env` / `vms/` / `data/`。
+
+```bash
+sudo bash /opt/vm2api/deploy/install.sh upgrade --auto
+```
+
+systemd timer 示例（每天 03:17 检查一次）：
+
+```ini
+# /etc/systemd/system/vm2api-auto-upgrade.service
+[Unit]
+Description=Check for a new vm2api release
+
+[Service]
+Type=oneshot
+ExecStart=/opt/vm2api/deploy/install.sh upgrade --auto
+```
+
+```ini
+# /etc/systemd/system/vm2api-auto-upgrade.timer
+[Unit]
+Description=Daily vm2api release check
+
+[Timer]
+OnCalendar=*-*-* 03:17:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+启用：
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now vm2api-auto-upgrade.timer
+```
+
+锁文件默认是 `/run/lock/vm2api-upgrade.lock`，可用 `VM2API_UPGRADE_LOCK=/path/to/lock` 指定位置。定时任务应使用 `--auto`，避免已是最新时重复重建控制面并中断请求。
+
 首次登录后，在「用户」中找到当前管理员，点击「改密码」设置至少 8 位的新密码。默认密码管理员也会写入用户列表；修改后数据库密码优先，重启或更新不会被 `.env` 中的旧密码覆盖。
 
 **ARM64 主机（实验性）**：同一条命令按 `uname -m` 自动选择 `vX.Y.Z-arm64` 控制面镜像并准备 QEMU（slot 仍是 amd64）。`--version` 可带 `-amd64` / `-arm64` 后缀，须与宿主一致。详见 [ARM64.md](ARM64.md)。
